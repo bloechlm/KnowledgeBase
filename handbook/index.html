@@ -1,0 +1,205 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KnowledgeBase · Service-Handbuch</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f6fa;color:#17263c;font:16px system-ui,sans-serif}header{background:#101e32;color:#fff;padding:18px max(5vw,20px);display:flex;gap:24px;align-items:center;justify-content:space-between;flex-wrap:wrap}header strong{letter-spacing:-.5px;font-size:21px}nav,.actions,.filters,.card-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}main{max-width:1080px;margin:auto;padding:48px 24px}h1{font-size:clamp(32px,6vw,53px);letter-spacing:-.06em;margin:0 0 8px}p{line-height:1.55}.muted{color:#526379}.hero{display:flex;justify-content:space-between;align-items:end;gap:16px;flex-wrap:wrap;margin-bottom:28px}.filters{padding:16px;background:#fff;border:1px solid #dce4ee;border-radius:14px}.filters input{flex:1;min-width:200px}.filters>*{max-width:100%}button,input,select,textarea{font:inherit;border:1px solid #c7d2df;border-radius:8px;padding:9px 12px;background:white;color:inherit}button{cursor:pointer;font-weight:650}button.primary{background:#1759b8;color:#fff;border-color:#1759b8}button:hover{filter:brightness(.94)}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #77aefa;outline-offset:2px}nav button{background:#23354e;color:#fff;border-color:#4b5d76}nav [aria-current=page]{background:#fff;color:#14243b}article,.panel{background:#fff;border:1px solid #dce4ee;border-radius:14px;padding:20px;margin:12px 0;overflow-wrap:anywhere}article h2{margin:8px 0}.badge{display:inline-block;background:#e9f1ff;color:#164c97;padding:4px 9px;border-radius:99px;font-size:13px;font-weight:650}.card-actions{margin-top:14px}.check{display:inline-flex;align-items:center;gap:6px}.check input{width:17px;height:17px}.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px}label.field{display:grid;gap:5px;margin:12px 0;font-weight:600}textarea{min-height:92px;resize:vertical}.text{white-space:pre-wrap}.photos{display:flex;gap:12px;flex-wrap:wrap}.photos figure{margin:6px 0}.photos img{display:block;max-width:min(100%,260px);max-height:200px;object-fit:contain;margin-bottom:5px}.category{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid #e5ebf2}.category span{flex:1;min-width:140px}.danger{color:#992c2c}#notice{margin:0 0 12px;color:#982e22}#print{display:none}.report img{max-width:100%;max-height:120mm;object-fit:contain}.report a{color:#174d95}.report section{overflow-wrap:anywhere}.report figure{break-inside:avoid;margin:12px 0}
+@media print{@page{size:A4;margin:16mm}body{background:white;color:black;font-size:11pt}header,main{display:none!important}#print{display:block}.report section{break-before:page}.report h2,.report h3{break-after:avoid}.report .badge{padding:0;color:black;background:white}}
+</style>
+</head>
+<body>
+<header><strong>KnowledgeBase</strong><nav><button id="load">Projekt öffnen</button><button id="save">Projekt speichern</button><button id="pdf">PDF erstellen</button></nav></header>
+<main>
+<input id="file" type="file" accept=".json,application/json" hidden>
+<div class="hero"><div><h1>Service-Handbuch</h1><label class="field">PDF-Titel<input id="title" value="Service-Handbuch"></label></div><button class="primary" id="category">＋ Kapitel</button></div>
+<p id="notice" role="status"></p><div id="view"></div>
+</main><div id="print" class="report"></div>
+<script>
+'use strict';
+const $ = id => document.getElementById(id);
+const esc = value => String(value ?? '').replace(/[&<>"']/g,c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let chapters = [], active, dirty = false, projectVersion = 0;
+const fields = [['title','Titel'],['symptom','Fehlerbild · Stichwörter'],['cause','Prüfung und Ursache · Stichwörter'],['solution','Lösung · Stichwörter'],['links','Verweise · ein Link pro Zeile'],['text','PDF-Text']];
+const newEntry = () => ({title:'',symptom:'',cause:'',solution:'',links:'',text:'',photos:[]});
+function status(message) { $('notice').textContent = message; }
+function changed() { dirty = true; }
+function move(list,index,delta) {
+  const target = index+delta;
+  if (target < 0 || target >= list.length) return;
+  [list[index],list[target]] = [list[target],list[index]];
+  changed(); render();
+}
+function pictures(entry,edit) {
+  return entry.photos.map((photo,index) => `<figure><img src="${esc(photo.src)}" alt="${esc(photo.caption)}">${edit ? `<label class="field">Bildunterschrift<input data-caption="${index}" value="${esc(photo.caption)}"></label><button data-photo="${index}">Bild entfernen</button>` : '<figcaption>'+esc(photo.caption)+'</figcaption>'}</figure>`).join('');
+}
+function render() {
+  $('view').innerHTML = chapters.map((chapter,i) => `<section class="panel" data-chapter="${i}"><h2>${esc(chapter.name)}</h2><div class="actions"><button data-action="rename">Umbenennen</button><button data-action="up" aria-label="Kapitel nach oben" ${i===0?'disabled':''}>↑</button><button data-action="down" aria-label="Kapitel nach unten" ${i===chapters.length-1?'disabled':''}>↓</button><button data-action="add">＋ Fehlerfall</button><button data-action="delete" class="danger">Kapitel löschen</button></div>
+  ${chapter.entries.map((entry,j) => `<article data-entry="${j}"><div class="actions"><button data-action="open" aria-expanded="${active===entry}">${esc(entry.title || 'Neuer Fehlerfall')}</button><button data-action="up" aria-label="Eintrag nach oben" ${j===0?'disabled':''}>↑</button><button data-action="down" aria-label="Eintrag nach unten" ${j===chapter.entries.length-1?'disabled':''}>↓</button></div>
+  ${active===entry ? `<label class="field">Kapitel<select data-move>${chapters.map((c,k)=>`<option value="${k}" ${k===i?'selected':''}>${esc(c.name)}</option>`).join('')}</select></label>
+  ${fields.map(([key,label])=>`<label class="field">${label}${key==='title'? `<input data-field="title" value="${esc(entry.title)}">` : `<textarea data-field="${key}">${esc(entry[key])}</textarea>`}</label>`).join('')}
+  <button class="primary" data-action="ai">Mit KI ausformulieren</button>
+  <label class="field">Fotos hinzufügen<input type="file" accept="image/*" multiple data-images></label><div class="photos">${pictures(entry,true)}</div><button class="danger" data-action="delete">Fehlerfall löschen</button>` : ''}</article>`).join('')}</section>`).join('') || '<p class="panel">Lege ein Kapitel an und füge deinen ersten Fehlerfall hinzu.</p>';
+}
+$('view').oninput = event => {
+  const input = event.target;
+  if (!input.matches('[data-field],[data-caption]')) return;
+  const row = input.closest('[data-entry]');
+  const entry = chapters[row.closest('[data-chapter]').dataset.chapter].entries[row.dataset.entry];
+  if (input.hasAttribute('data-caption')) entry.photos[input.dataset.caption].caption = input.value;
+  else {
+    entry[input.dataset.field] = input.value;
+    if (input.dataset.field === 'title') row.querySelector('[data-action=open]').textContent = input.value || 'Neuer Fehlerfall';
+  }
+  changed();
+};
+async function photo(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const scale = Math.min(1,1800/Math.max(image.width,image.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1,Math.round(image.width*scale));
+    canvas.height = Math.max(1,Math.round(image.height*scale));
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.drawImage(image,0,0,canvas.width,canvas.height);
+    return {src:canvas.toDataURL('image/jpeg',.88),caption:file.name};
+  } finally { URL.revokeObjectURL(url); }
+}
+$('view').onchange = async event => {
+  const input = event.target;
+  if (!input.matches('[data-move],[data-images]')) return;
+  const row = input.closest('[data-entry]');
+  const chapter = chapters[row.closest('[data-chapter]').dataset.chapter];
+  const entry = chapter.entries[row.dataset.entry];
+  if (input.hasAttribute('data-move')) {
+    const target = chapters[Number(input.value)];
+    if (target === chapter) return;
+    chapter.entries.splice(Number(row.dataset.entry),1);
+    target.entries.push(entry);
+  } else {
+    const version = projectVersion;
+    const results = await Promise.allSettled([...input.files].map(photo));
+    if (version !== projectVersion || !chapters.some(c=>c.entries.includes(entry))) return;
+    entry.photos.push(...results.filter(result=>result.status==='fulfilled').map(result=>result.value));
+    if (results.some(result=>result.status==='rejected')) status('Mindestens ein Bild war nicht lesbar. Versuche JPEG oder PNG.');
+  }
+  changed(); render();
+};
+const pending = new WeakSet();
+async function writeEntry(entry,button) {
+  if (pending.has(entry)) return;
+  const {title,symptom,cause,solution} = entry;
+  if (!symptom.trim()) { status('Gib zuerst Stichwörter zum Fehlerbild ein.'); return; }
+  pending.add(entry);
+  button.disabled = true;
+  status('KI formuliert den Fehlerfall aus …');
+  try {
+    const response = await fetch('/api/draft',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title,symptom,cause,solution})});
+    if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('Starte den lokalen KI-Server und öffne den Editor über http://127.0.0.1:8765.');
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error);
+    if (!chapters.some(c=>c.entries.includes(entry))) return;
+    if (entry.text.trim() && !confirm('Den vorhandenen PDF-Text durch den neuen KI-Entwurf ersetzen?')) {
+      status('Der vorhandene Text wurde behalten.'); return;
+    }
+    entry.text = result.text;
+    changed(); render();
+    status('KI-Entwurf eingefügt. Prüfe den Text vor dem PDF-Export.');
+  } catch (error) {
+    status(location.protocol === 'file:' ? 'Starte den lokalen KI-Server und öffne http://127.0.0.1:8765.' : error.message);
+  } finally { pending.delete(entry); button.disabled = false; }
+}
+$('view').onclick = event => {
+  const button = event.target.closest('button');
+  if (!button) return;
+  const i = Number(button.closest('[data-chapter]').dataset.chapter);
+  const chapter = chapters[i];
+  const row = button.closest('[data-entry]');
+  const j = Number(row?.dataset.entry);
+  const entry = chapter.entries[j];
+  if (button.hasAttribute('data-photo')) {
+    entry.photos.splice(Number(button.dataset.photo),1);
+  } else switch (button.dataset.action) {
+    case 'ai': return writeEntry(entry,button);
+    case 'open': active = active === entry ? undefined : entry; render(); return;
+    case 'up': return move(row ? chapter.entries : chapters,row ? j : i,-1);
+    case 'down': return move(row ? chapter.entries : chapters,row ? j : i,1);
+    case 'add': active = newEntry(); chapter.entries.push(active); break;
+    case 'rename': {
+      const name = prompt('Kapitelname',chapter.name)?.trim();
+      if (!name) return;
+      chapter.name = name; break;
+    }
+    case 'delete':
+      if (!confirm(row ? 'Fehlerfall samt Bildern aus dem Projekt entfernen?' : 'Kapitel samt allen Fehlerfällen aus dem Projekt entfernen?')) return;
+      if (row) chapter.entries.splice(j,1); else chapters.splice(i,1);
+      if (!chapters.some(c=>c.entries.includes(active))) active = undefined;
+      break;
+    default: return;
+  }
+  changed(); render();
+};
+$('category').onclick = () => {
+  const name = prompt('Name des Kapitels')?.trim();
+  if (!name) return;
+  chapters.push({name,entries:[]});
+  changed(); render();
+};
+$('title').oninput = changed;
+$('save').onclick = () => {
+  const blob = new Blob([JSON.stringify({version:1,title:$('title').value,chapters})],{type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url; link.download = 'Service-Handbuch.json'; link.click();
+  setTimeout(()=>URL.revokeObjectURL(url),30000);
+  dirty = false;
+  status('Projektdatei heruntergeladen.');
+};
+function valid(project) {
+  return project?.version===1 && typeof project.title==='string' && Array.isArray(project.chapters) &&
+    project.chapters.every(chapter=>typeof chapter?.name==='string' && Array.isArray(chapter.entries) && chapter.entries.every(entry=>
+      fields.every(([key])=>typeof entry?.[key]==='string') && Array.isArray(entry.photos) &&
+      entry.photos.every(p=>typeof p?.caption==='string' && typeof p.src==='string' && /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/.test(p.src))));
+}
+$('load').onclick = () => {
+  if (!dirty || confirm('Ein anderes Projekt öffnen und ungespeicherte Änderungen verwerfen?')) $('file').click();
+};
+$('file').onchange = async event => {
+  const file = event.target.files[0];
+  event.target.value = '';
+  if (!file) return;
+  try {
+    const project = JSON.parse(await file.text());
+    if (!valid(project)) throw new Error();
+    chapters = project.chapters; $('title').value = project.title; active = undefined;
+    projectVersion++; dirty = false; render(); status('Projekt geöffnet.');
+  } catch { status('Diese Datei ist kein gültiges KnowledgeBase-Projekt.'); }
+};
+addEventListener('beforeunload',event=>{ if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+function refs(text) {
+  return text.split(/\r?\n/).map(s=>s.trim()).filter(Boolean).map(line=>{
+    if (/^https?:\/\//i.test(line)) return '<li><a href="'+esc(line)+'">'+esc(line)+'</a></li>';
+    return '<li>'+esc(line)+'</li>';
+  }).join('');
+}
+$('pdf').onclick = async () => {
+  const included = chapters.filter(chapter=>chapter.entries.length);
+  if (!included.length) { status('Füge zuerst einen Fehlerfall hinzu.'); return; }
+  const label = entry => esc(entry.title || 'Fehlerfall ohne Titel');
+  const report = $('print');
+  const id = (i,j) => 'fall-'+i+'-'+j;
+  report.innerHTML = '<h1>'+esc($('title').value || 'Service-Handbuch')+'</h1><h2>Inhaltsverzeichnis</h2><ol>'+
+    included.map((chapter,i)=>`<li><strong>${esc(chapter.name)}</strong><ol>${chapter.entries.map((entry,j)=>`<li><a href="#${id(i,j)}">${label(entry)}</a></li>`).join('')}</ol></li>`).join('')+'</ol>'+
+    included.map((chapter,i)=>chapter.entries.map((entry,j)=>`<section id="${id(i,j)}"><p>${i+1}. ${esc(chapter.name)}</p><h2>${i+1}.${j+1} ${label(entry)}</h2><div class="text">${esc(entry.text || [entry.symptom,entry.cause,entry.solution].filter(Boolean).join('\n\n'))}</div>${entry.links.trim()?'<h3>Verweise</h3><ul>'+refs(entry.links)+'</ul>':''}${pictures(entry,false)}</section>`).join('')).join('');
+  await Promise.allSettled([...report.querySelectorAll('img')].map(img=>img.decode()));
+  window.print();
+};
+render();
+</script>
+</body></html>
