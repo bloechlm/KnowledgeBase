@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KnowledgeBase</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f3f6fa;color:#17263c;font:16px system-ui,sans-serif}header{background:#101e32;color:#fff;padding:18px max(5vw,20px);display:flex;gap:24px;align-items:center;justify-content:space-between;flex-wrap:wrap}header strong{letter-spacing:-.5px;font-size:21px}nav,.actions,.filters,.card-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center}main{max-width:1080px;margin:auto;padding:48px 24px}h1{font-size:clamp(32px,6vw,53px);letter-spacing:-.06em;margin:0 0 8px}p{line-height:1.55}.muted{color:#526379}.hero{display:flex;justify-content:space-between;align-items:end;gap:16px;flex-wrap:wrap;margin-bottom:28px}.filters{padding:16px;background:#fff;border:1px solid #dce4ee;border-radius:14px}.filters input{flex:1;min-width:200px}.filters>*{max-width:100%}button,input,select,textarea{font:inherit;border:1px solid #c7d2df;border-radius:8px;padding:9px 12px;background:white;color:inherit}button{cursor:pointer;font-weight:650}button.primary{background:#1759b8;color:#fff;border-color:#1759b8}button:hover{filter:brightness(.94)}button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #77aefa;outline-offset:2px}nav button{background:#23354e;color:#fff;border-color:#4b5d76}nav [aria-current=page]{background:#fff;color:#14243b}article,.panel{background:#fff;border:1px solid #dce4ee;border-radius:14px;padding:20px;margin:12px 0;overflow-wrap:anywhere}article h2{margin:8px 0}.badge{display:inline-block;background:#e9f1ff;color:#164c97;padding:4px 9px;border-radius:99px;font-size:13px;font-weight:650}.card-actions{margin-top:14px}.check{display:inline-flex;align-items:center;gap:6px}.check input{width:17px;height:17px}.form-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr));gap:12px}label.field{display:grid;gap:5px;margin:12px 0;font-weight:600}textarea{min-height:92px;resize:vertical}.text{white-space:pre-wrap}.photos{display:flex;gap:12px;flex-wrap:wrap}.photos figure{margin:6px 0}.photos img{display:block;max-width:min(100%,260px);max-height:200px;object-fit:contain;margin-bottom:5px}.category{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid #e5ebf2}.category span{flex:1;min-width:140px}.danger{color:#992c2c}#notice{margin:0 0 12px;color:#982e22}#print{display:none}.report img{max-width:100%;max-height:120mm;object-fit:contain}.report a{color:#174d95}.report section{overflow-wrap:anywhere}.report figure{break-inside:avoid;margin:12px 0}
+@media print{@page{size:A4;margin:16mm}body{background:white;color:black;font-size:11pt}header,main{display:none!important}#print{display:block}.report section{break-before:page}.report h2,.report h3{break-after:avoid}.report .badge{padding:0;color:black;background:white}}
+</style>
+</head>
+<body>
+<header><strong>KnowledgeBase</strong><nav aria-label="Navigation"><button id="home">Fehlerfälle</button><button id="admin">Kategorien verwalten</button></nav></header>
+<main><p id="notice" role="alert"></p><div id="view"></div></main>
+<div id="print" class="report"></div>
+<script>
+'use strict';
+const byId = id => document.getElementById(id);
+const view = byId('view');
+const groups = {device:'Gerätekategorien', fault:'Fehlerkategorien'};
+const statuses = ['Entwurf','In Prüfung','Gelöst'];
+const empty = {device:['Antrieb','Netzwerkgerät','GNSS-Empfänger'],fault:['Kommunikation','Positionierung','Temperatur'],cases:[
+  {id:'demo-1',title:'Gerät nach IP-Änderung nicht erreichbar',device:'Netzwerkgerät',fault:'Kommunikation',status:'In Prüfung',description:'Beispielfall: Nach der Änderung der IP-Adresse öffnet sich die Weboberfläche nicht mehr.',cause:'Die Netzwerkeinstellungen des PCs und des Geräts vergleichen.',solution:'',links:'',photos:[]},
+  {id:'demo-2',title:'GNSS-Empfänger bleibt bei RTK Float',device:'GNSS-Empfänger',fault:'Positionierung',status:'Entwurf',description:'Beispielfall: Der Empfänger erreicht keinen RTK-Fix.',cause:'',solution:'',links:'',photos:[]}
+]};
+let db, data, screen;
+const selected = new Set();
+const filters = {query:'',device:'',fault:'',status:''};
+const escape = value => String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+function openDB() {
+  return new Promise((resolve,reject) => {
+    const request = indexedDB.open('knowledgebase-v1',1);
+    request.onupgradeneeded = () => request.result.createObjectStore('state');
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+function read() {
+  return new Promise((resolve,reject) => {
+    const request = db.transaction('state').objectStore('state').get('current');
+    request.onsuccess = () => resolve(request.result ?? empty);
+    request.onerror = () => reject(request.error);
+  });
+}
+function change(mutate) {
+  return new Promise((resolve,reject) => {
+    const tx = db.transaction('state','readwrite');
+    const store = tx.objectStore('state');
+    const request = store.get('current');
+    let next;
+    let failure;
+    request.onsuccess = () => {
+      try {
+        next = request.result ?? structuredClone(empty);
+        mutate(next);
+        store.put(next,'current');
+      } catch (error) {
+        failure = error;
+        tx.abort();
+      }
+    };
+    tx.oncomplete = () => { data = next; resolve(); };
+    tx.onabort = () => reject(failure ?? tx.error);
+  });
+}
+function errorMessage(error) {
+  byId('notice').textContent = error?.name === 'QuotaExceededError' ? 'Der Browserspeicher ist voll. Entferne einige Fotos und versuche es erneut.' : (error?.message || 'Die Änderung konnte nicht gespeichert werden.');
+}
+function navigate(next) {
+  screen = next;
+  byId('notice').textContent = '';
+  byId('home').setAttribute('aria-current',next === 'admin' ? 'false' : 'page');
+  byId('admin').setAttribute('aria-current',next === 'admin' ? 'page' : 'false');
+  if (next === 'admin') renderAdmin();
+  else renderHome();
+}
+function options(values, current, blank) {
+  return (blank ? '<option value="">'+escape(blank)+'</option>' : '') + values.map(value => '<option'+(value === current ? ' selected' : '')+'>'+escape(value)+'</option>').join('');
+}
+function filtered() {
+  const query = filters.query.trim().toLocaleLowerCase('de');
+  return data.cases.filter(item => ['device','fault','status'].every(key => !filters[key] || item[key] === filters[key]) &&
+    [item.title,item.description,item.solution,item.cause,item.links,item.device,item.fault].join(' ').toLocaleLowerCase('de').includes(query));
+}
+function renderHome() {
+  view.innerHTML = `<div class="hero"><div><h1>Fehlerfälle</h1><p class="muted">Servicefälle dokumentieren und als PDF zusammenstellen.</p></div><button id="new" class="primary">＋ Fehler erfassen</button></div>
+  <div class="filters"><input id="query" type="search" aria-label="Fehlerfälle suchen" placeholder="Fehler, Symptome oder Fehlercodes suchen" value="${escape(filters.query)}">
+  <select id="device" aria-label="Gerätekategorie">${options(data.device,filters.device,'Alle Gerätekategorien')}</select>
+  <select id="fault" aria-label="Fehlerkategorie">${options(data.fault,filters.fault,'Alle Fehlerkategorien')}</select>
+  <select id="status" aria-label="Status">${options(statuses,filters.status,'Alle Status')}</select></div>
+  <div class="actions"><p class="muted" id="count"></p><button id="pdf">PDF erstellen</button><button id="clear" hidden>Auswahl aufheben</button></div><div id="cases"></div>`;
+  byId('new').onclick = () => renderForm();
+  byId('pdf').onclick = exportPDF;
+  byId('clear').onclick = () => { selected.clear(); renderCases(); };
+  for (const key of Object.keys(filters)) byId(key).oninput = event => { filters[key] = event.target.value; renderCases(); };
+  renderCases();
+}
+function renderCases() {
+  const items = filtered();
+  byId('count').textContent = items.length+' Treffer'+(selected.size ? ' · '+selected.size+' für PDF ausgewählt' : '');
+  byId('pdf').disabled = !items.length && !selected.size;
+  byId('clear').hidden = !selected.size;
+  byId('cases').innerHTML = items.map((item,index) => `<article><span class="badge">${escape(item.status)}</span> <small class="muted">${escape([item.device,item.fault].filter(Boolean).join(' · '))}</small><h2>${escape(item.title)}</h2><p class="text">${escape(item.description.length > 240 ? item.description.slice(0,240)+'…' : item.description)}</p><div class="card-actions"><button data-open="${index}">Öffnen</button><label class="check"><input type="checkbox" data-select="${index}" ${selected.has(item.id) ? 'checked' : ''}> Für PDF auswählen</label></div></article>`).join('') || '<p class="panel muted">Keine Fehlerfälle gefunden.</p>';
+  for (const button of view.querySelectorAll('[data-open]')) button.onclick = () => renderDetail(items[button.dataset.open]);
+  for (const checkbox of view.querySelectorAll('[data-select]')) checkbox.onchange = () => {
+    const id = items[checkbox.dataset.select].id;
+    if (checkbox.checked) selected.add(id); else selected.delete(id);
+    byId('count').textContent = items.length+' Treffer'+(selected.size ? ' · '+selected.size+' für PDF ausgewählt' : '');
+    byId('clear').hidden = !selected.size;
+  };
+}
+function photoMarkup(photos, removable = false) {
+  return photos.map((photo,index) => `<figure><img src="${escape(photo.src)}" alt="${escape(photo.name)}"><figcaption>${escape(photo.name)}</figcaption>${removable ? '<button type="button" data-remove="'+index+'">Foto entfernen</button>' : ''}</figure>`).join('');
+}
+function references(links) {
+  return links.split(/\r?\n/).map(line => line.trim()).filter(Boolean).map(line => {
+    try {
+      const url = new URL(line);
+      if (['http:','https:'].includes(url.protocol)) return `<li><a href="${escape(url.href)}" target="_blank" rel="noopener noreferrer">${escape(line)}</a></li>`;
+    } catch {}
+    return '<li>'+escape(line)+'</li>';
+  }).join('');
+}
+function details(item) {
+  const fields = [['Lösung',item.solution],['Fehlerbeschreibung',item.description],['Prüfung und Ursache',item.cause]];
+  return `<p class="muted">${escape([item.device,item.fault,item.status].filter(Boolean).join(' · '))}</p>` +
+    fields.filter(([,value]) => value).map(([label,value]) => `<h3>${label}</h3><p class="text">${escape(value)}</p>`).join('') +
+    (item.links.trim() ? '<h3>Verweise</h3><ul>'+references(item.links)+'</ul>' : '') +
+    (item.photos.length ? '<h3>Fotos</h3><div class="photos">'+photoMarkup(item.photos)+'</div>' : '');
+}
+function renderDetail(item) {
+  view.innerHTML = `<div class="actions"><button id="back">← Fehlerfälle</button><button id="edit" class="primary">Bearbeiten</button><button id="delete" class="danger">Fehlerfall löschen</button></div><article><h1>${escape(item.title)}</h1>${details(item)}</article>`;
+  byId('back').onclick = () => navigate('home');
+  byId('edit').onclick = () => renderForm(item);
+  byId('delete').onclick = async () => {
+    if (!confirm('Diesen Fehlerfall samt Fotos löschen?')) return;
+    try {
+      await change(state => { state.cases = state.cases.filter(record => record.id !== item.id); });
+      selected.delete(item.id);
+      navigate('home');
+    } catch (error) { errorMessage(error); }
+  };
+}
+async function loadPhoto(file) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = new Image();
+    img.src = url;
+    await img.decode();
+    const scale = Math.min(1,1600/Math.max(img.width,img.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1,Math.round(img.width*scale));
+    canvas.height = Math.max(1,Math.round(img.height*scale));
+    const context = canvas.getContext('2d');
+    context.fillStyle = '#fff';
+    context.fillRect(0,0,canvas.width,canvas.height);
+    context.drawImage(img,0,0,canvas.width,canvas.height);
+    return {name:file.name,src:canvas.toDataURL('image/jpeg',.85)};
+  } finally { URL.revokeObjectURL(url); }
+}
+function renderForm(item = {}) {
+  const photos = [...(item.photos ?? [])];
+  const initial = item.id ? () => renderDetail(item) : () => navigate('home');
+  view.innerHTML = `<button id="back">← Zurück</button><h1>${item.id ? 'Fehler bearbeiten' : 'Fehler erfassen'}</h1><form id="form" class="panel">
+  <label class="field">Titel<input name="title" required maxlength="180" value="${escape(item.title)}"></label>
+  <div class="form-grid"><label class="field">Gerätekategorie<select name="device">${options(data.device,item.device,'Nicht zugeordnet')}</select></label>
+  <label class="field">Fehlerkategorie<select name="fault">${options(data.fault,item.fault,'Nicht zugeordnet')}</select></label>
+  <label class="field">Status<select name="status">${options(statuses,item.status)}</select></label></div>
+  <label class="field">Fehlerbeschreibung<textarea name="description" required>${escape(item.description)}</textarea></label>
+  <label class="field">Prüfung und Ursache<textarea name="cause">${escape(item.cause)}</textarea></label>
+  <label class="field">Lösung<textarea name="solution">${escape(item.solution)}</textarea></label>
+  <label class="field">Verweise<textarea name="links" placeholder="Ein Link oder Verweis pro Zeile">${escape(item.links)}</textarea></label>
+  <label class="field">Fotos und Screenshots<input id="files" type="file" accept="image/*" multiple></label><p id="photo-status" role="status"></p><div id="photos" class="photos"></div>
+  <div class="actions"><button id="save" class="primary">Fehlerfall speichern</button><button type="button" id="cancel">Abbrechen</button></div></form>`;
+  byId('back').onclick = byId('cancel').onclick = initial;
+  const form = byId('form');
+  const files = byId('files');
+  const save = byId('save');
+  const photosElement = byId('photos');
+  const photoStatus = byId('photo-status');
+  function showPhotos() {
+    photosElement.innerHTML = photoMarkup(photos,true);
+    for (const button of photosElement.querySelectorAll('[data-remove]')) button.onclick = () => { photos.splice(Number(button.dataset.remove),1); showPhotos(); };
+  }
+  showPhotos();
+  files.onchange = async () => {
+    const chosen = [...files.files];
+    save.disabled = files.disabled = true;
+    photoStatus.textContent = 'Fotos werden verarbeitet …';
+    const results = await Promise.allSettled(chosen.map(loadPhoto));
+    for (const result of results) if (result.status === 'fulfilled') photos.push(result.value);
+    const failures = chosen.filter((_,index) => results[index].status === 'rejected');
+    photoStatus.textContent = failures.length ? 'Nicht lesbar: '+failures.map(file => file.name).join(', ')+'. Versuche JPEG oder PNG.' : '';
+    files.value = '';
+    save.disabled = files.disabled = false;
+    showPhotos();
+  };
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (save.disabled) return;
+    const record = Object.fromEntries([...new FormData(form)].map(([key,value]) => [key,value.trim()]));
+    if (!record.title || !record.description) { errorMessage(new Error('Bitte Titel und Fehlerbeschreibung ausfüllen.')); return; }
+    record.id = item.id || (globalThis.crypto?.randomUUID?.() ?? Date.now()+'-'+Math.random());
+    record.photos = [...photos];
+    save.disabled = files.disabled = true;
+    try {
+      await change(state => {
+        for (const key of Object.keys(groups)) if (record[key] && !state[key].includes(record[key])) record[key] = '';
+        const index = state.cases.findIndex(entry => entry.id === record.id);
+        if (item.id && index < 0) throw new Error('Dieser Fehlerfall wurde inzwischen gelöscht.');
+        if (index < 0) state.cases.unshift(record); else state.cases[index] = record;
+      });
+      byId('notice').textContent = '';
+      renderDetail(record);
+    } catch (error) { errorMessage(error); save.disabled = files.disabled = false; }
+  };
+}
+function renderAdmin() {
+  view.innerHTML = '<h1>Kategorien verwalten</h1><p class="muted">Beim Umbenennen wird die Zuordnung in allen Fehlerfällen aktualisiert.</p>'+
+    Object.entries(groups).map(([key,label]) => `<section class="panel"><h2>${label}</h2><form class="actions" data-add="${key}"><input required maxlength="70" aria-label="Name für ${label}" placeholder="Neue Kategorie"><button class="primary">Hinzufügen</button></form>
+    ${data[key].map((name,index) => `<div class="category"><span>${escape(name)} · ${data.cases.filter(item => item[key] === name).length} Fälle</span><button data-rename="${key}" data-index="${index}">Umbenennen</button><button class="danger" data-delete="${key}" data-index="${index}">Löschen</button></div>`).join('')}</section>`).join('');
+  async function update(key, oldName, newName, button) {
+    const name = newName?.trim();
+    if (newName !== null && !name) { errorMessage(new Error('Bitte einen Kategorienamen eingeben.')); return; }
+    if (name === oldName) return;
+    button.disabled = true;
+    try {
+      await change(state => {
+        if (oldName && !state[key].includes(oldName)) throw new Error('Diese Kategorie wurde inzwischen geändert.');
+        if (name && state[key].some(value => value.toLocaleLowerCase('de') === name.toLocaleLowerCase('de') && value !== oldName)) throw new Error('Diese Kategorie gibt es bereits.');
+        if (!oldName) state[key].push(name);
+        else {
+          state[key] = state[key].flatMap(value => value !== oldName ? [value] : (name ? [name] : []));
+          for (const item of state.cases) if (item[key] === oldName) item[key] = name || '';
+        }
+      });
+      if (oldName && filters[key] === oldName) filters[key] = name || '';
+      navigate('admin');
+    } catch (error) { errorMessage(error); button.disabled = false; }
+  }
+  for (const form of view.querySelectorAll('[data-add]')) form.onsubmit = event => {
+    event.preventDefault();
+    update(form.dataset.add,null,form.querySelector('input').value,form.querySelector('button'));
+  };
+  for (const button of view.querySelectorAll('[data-rename]')) button.onclick = () => {
+    const key = button.dataset.rename;
+    const oldName = data[key][button.dataset.index];
+    const name = prompt('Neuer Kategoriename',oldName);
+    if (name !== null) update(key,oldName,name,button);
+  };
+  for (const button of view.querySelectorAll('[data-delete]')) button.onclick = () => {
+    const key = button.dataset.delete;
+    const name = data[key][button.dataset.index];
+    if (confirm('Kategorie „'+name+'“ löschen? Zugeordnete Fehlerfälle bleiben erhalten.')) update(key,name,null,button);
+  };
+}
+async function exportPDF() {
+  const items = selected.size ? data.cases.filter(item => selected.has(item.id)) : filtered();
+  if (!items.length) return;
+  const report = byId('print');
+  report.innerHTML = `<h1>KnowledgeBase</h1><p>${new Date().toLocaleDateString('de-AT')} · ${items.length} Fehlerfälle</p><h2>Inhaltsverzeichnis</h2>
+  <ol>${items.map((item,index) => `<li><a href="#fall-${index+1}">${escape(item.title)}</a></li>`).join('')}</ol>
+  ${items.map((item,index) => `<section id="fall-${index+1}"><h2>${index+1}. ${escape(item.title)}</h2>${details(item)}</section>`).join('')}`;
+  await Promise.allSettled([...report.querySelectorAll('img')].map(img => img.decode()));
+  window.print();
+}
+(async () => {
+  try {
+    db = await openDB();
+    data = await read();
+    byId('home').onclick = () => navigate('home');
+    byId('admin').onclick = () => navigate('admin');
+    navigate('home');
+  } catch (error) {
+    errorMessage(error);
+    view.innerHTML = '<p>Öffne die Testversion in einem Browser mit aktiviertem lokalem Speicher.</p>';
+  }
+})();
+</script>
+</body>
+</html>
